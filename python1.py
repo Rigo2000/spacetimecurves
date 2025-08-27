@@ -16,6 +16,31 @@ TARGET_SPACING_PX = 100.0  # preferred on-screen spacing for "current level"
 MAX_REL_LEVELS = 2     # number of finer levels to draw
 R_MIN, R_MAX = 1.0, 3.0
 
+class Particle:
+    def __init__(self, world_x, world_y, size=5, color=(0, 100, 255)):
+        self.world_x = world_x
+        self.world_y = world_y
+        self.size = size  # in world units
+        self.color = color
+
+    def draw(self, camera_x, camera_y, camera_zoom):
+        # Convert world -> screen
+        sx = (self.world_x - camera_x) * camera_zoom + WIDTH * 0.5
+        sy = (self.world_y - camera_y) * camera_zoom + HEIGHT * 0.5
+        screen_radius = max(1, int(round(self.size * camera_zoom)))
+
+        # Only draw if within screen bounds (simple culling)
+        if -screen_radius <= sx <= WIDTH + screen_radius and -screen_radius <= sy <= HEIGHT + screen_radius:
+            pygame.draw.circle(screen, self.color, (int(sx), int(sy)), screen_radius)
+
+
+particles = [
+    Particle(0, 0, size=5),
+    Particle(50, 50, size=8),
+    Particle(-100, 30, size=4)
+]
+
+
 # Utilities
 def world_to_screen(wx, wy):
     sx = (wx - camera_x) * camera_zoom + WIDTH * 0.5
@@ -142,6 +167,10 @@ while running:
     # Draw
     screen.fill((10, 10, 10))
     draw_grid()
+
+    for p in particles:
+        p.draw(camera_x, camera_y, camera_zoom)
+
     if show_debug:
         debug_overlay()
     pygame.display.flip()
