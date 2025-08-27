@@ -12,9 +12,11 @@ camera_zoom = 1.0
 
 # Grid constants
 BASE_SPACING = 1.0    # world spacing at absolute Level 0
-TARGET_SPACING_PX = 100.0  # preferred on-screen spacing for "current level"
+TARGET_SPACING_PX = 50.0  # preferred on-screen spacing for "current level"
 MAX_REL_LEVELS = 2     # number of finer levels to draw
 R_MIN, R_MAX = 1.0, 5.0
+DISPLACEMENT_THRESHOLD = 10000
+
 
 class Particle:
     def __init__(self, world_x, world_y, size=5, color=(0, 100, 255)):
@@ -33,20 +35,133 @@ class Particle:
         if -screen_radius <= sx <= WIDTH + screen_radius and -screen_radius <= sy <= HEIGHT + screen_radius:
             pygame.draw.circle(screen, self.color, (int(sx), int(sy)), screen_radius)
 class Body:
-    def __init__(self, x, y, mass, radius=5.0):
-        self.x = x        # world x
-        self.y = y        # world y
-        self.mass = mass  # kg
-        self.radius = radius  # visual radius for rendering
-        self.rs = 2 * 6.67430e-11 * mass / (3e8**2)  # Schwarzschild radius
+    def __init__(self, x, y, mass, radius=5.0,
+                 displacement_threshold=200, rs_visual=None,
+                 movable=False, vx=0.0, vy=0.0):
+        self.x = float(x)
+        self.y = float(y)
+        self.mass = mass
+        self.radius = radius
+
+        # real schwarzschild radius (for reference)
+        self.rs = 2 * 6.67430e-11 * mass / (3e8**2)
+
+        # visual exaggeration
+        if rs_visual is not None:
+            self.rs_visual = float(rs_visual)
+        else:
+            self.rs_visual = 1e3 * self.rs
+
+        self.displacement_threshold = displacement_threshold
+
+        # movement properties (if movable True)
+        self.movable = bool(movable)
+        self.vx = float(vx)
+        self.vy = float(vy)
+        self.speed = math.hypot(self.vx, self.vy) if (self.vx or self.vy) else 0.0
+
+        # steering parameters (tune for stable orbits)
+        self.steering_K = 0.8         # how strongly slope steers direction
+        self.max_turn_rate = math.radians(180)  # rad/s cap
+        self.damping = 0.0            # optional small damping (0..1) to remove drift
 
     def draw(self, camera_x, camera_y, camera_zoom):
         sx = (self.x - camera_x) * camera_zoom + WIDTH * 0.5
         sy = (self.y - camera_y) * camera_zoom + HEIGHT * 0.5
         screen_radius = max(1, int(round(self.radius * camera_zoom)))
-        # Simple culling
         if -screen_radius <= sx <= WIDTH + screen_radius and -screen_radius <= sy <= HEIGHT + screen_radius:
             pygame.draw.circle(screen, (0, 200, 0), (int(sx), int(sy)), screen_radius)
+
+    def update(self, dt, all_bodies):
+        """If movable, steer according to gradZ from other bodies and integrate."""
+        if not self.movable:
+            return
+
+        # speed and unit direction
+        vmag = math.hypot(self.vx, self.vy)
+        if vmag == 0:
+            # initialize small random velocity to avoid zero division
+            ang = random.random() * 2 * math.pi
+            self.vx = math.cos(ang) * 1e-3
+            self.vy = math.sin(ang) * 1e-3
+            vmag = math.hypot(self.vx, self.vy)
+        ux = self.vx / vmag
+        uy = self.vy / vmag
+
+        # compute gradient of Z from *other* bodies only
+        other_bodies = [b for b in all_bodies if b is not self]
+        gx, gy = gradZ_at((self.x, self.y), other_bodies)
+        gmag = math.hypot(gx, gy)
+
+        if gmag > 0:
+            # downhill direction (toward reducing Z)
+            dx = gx / gmag
+            dy = gy / gmag
+
+            # steering strength from slope magnitude
+            strength = self.steering_K * min(1.0, gmag)  # clamp to [0,1]
+            blended_x = ux * (1.0 - strength) + dx * strength
+            blended_y = uy * (1.0 - strength) + dy * strength
+
+            # normalize blended
+            bmag = math.hypot(blended_x, blended_y)
+            if bmag > 0:
+                new_ux = blended_x / bmag
+                new_uy = blended_y / bmag
+            else:
+                new_ux, new_uy = ux, uy
+
+            # limit maximum turn rate
+            dot = max(-1.0, min(1.0, ux * new_ux + uy * new_uy))
+            ang = math.acos(dot)
+            max_ang = self.max_turn_rate * dt
+            if ang > max_ang and ang > 1e-8:
+                sign = 1.0 if (ux * new_uy - uy * new_ux) >= 0 else -1.0
+                cosA = math.cos(max_ang)
+                sinA = math.sin(max_ang) * sign
+                rx = ux * cosA - uy * sinA
+                ry = ux * sinA + uy * cosA
+                rmag = math.hypot(rx, ry)
+                ux, uy = rx / rmag, ry / rmag
+            else:
+                ux, uy = new_ux, new_uy
+
+        # keep magnitude of velocity (self.speed) if set, otherwise use vmag
+        if self.speed == 0:
+            self.speed = vmag if vmag > 0 else 1.0
+
+        # optional damping (to avoid runaway)
+        if self.damping:
+            self.speed *= (1.0 - self.damping * dt)
+
+        # update velocity and integrate position
+        self.vx = ux * self.speed
+        self.vy = uy * self.speed
+        self.x += self.vx * dt
+        self.y += self.vy * dt
+
+# helpers used by Body
+def gradZ_at(pos, bodies):
+    """Gradient of visualization Z at world position pos (dZ/dx, dZ/dy).
+       Excludes any contribution from bodies with zero rs_visual or beyond threshold.
+    """
+    x, y = pos
+    gx = 0.0
+    gy = 0.0
+    for b in bodies:
+        # skip if this body is None or if b.rs_visual==0
+        dx = x - b.x
+        dy = y - b.y
+        r = math.hypot(dx, dy) + 1e-9
+        if r > getattr(b, "displacement_threshold", 200):
+            continue
+        # Z contribution used in visualization was Z ~ b.rs_visual / r
+        # grad dZ/dx = -b.rs_visual * dx / r^3
+        inv_r3 = 1.0 / (r * r * r + 1e-12)
+        gx += -b.rs_visual * dx * inv_r3
+        gy += -b.rs_visual * dy * inv_r3
+    return gx, gy
+
 
 
 
@@ -56,10 +171,33 @@ particles = [
     Particle(-100, 30, size=4)
 ]
 
-bodies = [
-    Body(0, 0, 5e24),          # like Earth
-    Body(0, 0, 1.989e29, 10)   # like Sun
-]
+# create bodies list
+bodies = []
+
+# central star (immobile)
+star = Body(x=0.0, y=0.0, mass=1.989e30, radius=12.0,
+            displacement_threshold=2000, rs_visual=1e6, movable=False)
+bodies.append(star)
+
+# orbiting body (movable)
+r_orbit = 300.0  # world units distance from star
+# compute initial tangential speed using v ≈ K * rs_visual / r  (geometry-based guess)
+K_guess = 0.2
+v_guess = K_guess * star.rs_visual / r_orbit
+# if v_guess is tiny, scale it to a visually useful number
+if v_guess < 1.0:
+    v_guess = 80.0  # fallback base speed for visualization
+
+moon = Body(x=r_orbit, y=0.0, mass=7.3e22, radius=4.0,
+            displacement_threshold=1000, rs_visual=star.rs_visual * 0.1,
+            movable=True, vx=0.0, vy=v_guess)
+
+# set a desired constant speed for the moon (tweakable)
+moon.speed = v_guess
+moon.steering_K = K_guess
+moon.max_turn_rate = math.radians(120)  # allow some turning
+
+bodies.append(moon)
 
 def displace_point(x, y, bodies):
     x_new, y_new = x, y
@@ -67,8 +205,10 @@ def displace_point(x, y, bodies):
         dx = x_new - body.x
         dy = y_new - body.y
         r = math.hypot(dx, dy)
+        #if r > DISPLACEMENT_THRESHOLD:
+        #    continue  # ignore this body
         if r == 0:
-            continue  # avoid division by zero
+            continue
         # apply weak-field radial displacement
         r_proper = r * (1 + body.rs / (2*r))
         x_new = body.x + r_proper * dx / r
@@ -118,15 +258,14 @@ def draw_grid_level(spacing, radius_px, bodies=[]):
             # Apply displacement due to all bodies
             x_disp, y_disp = displace_point(x, y, bodies)
             sx, sy = world_to_screen(x_disp, y_disp)
+
+            # Draw the grid point if on screen
             if -10 <= sx <= WIDTH + 10 and -10 <= sy <= HEIGHT + 10:
                 pygame.draw.circle(screen, (200,200,200), (int(round(sx)), int(round(sy))), int(radius_px))
 
-                # Draw the coordinates next to the point
-                #coord_text = f"({x:.1f}, {y:.1f})"
-                #text_surf = font.render(coord_text, True, (255, 255, 255))
-                #screen.blit(text_surf, (sx, sy + 10))  # offset slightly from point
             y += spacing
         x += spacing
+
 
 def draw_grid():
     L_current = compute_current_level(camera_zoom)
@@ -207,6 +346,9 @@ while running:
     # Draw
     screen.fill((10, 10, 10))
     draw_grid()
+
+    for b in bodies:
+        b.update(dt, bodies)
 
     # Draw bodies
     for body in bodies:
