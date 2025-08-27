@@ -4,17 +4,17 @@ pygame.init()
 WIDTH, HEIGHT = 800, 600
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 clock = pygame.time.Clock()
-font = pygame.font.SysFont(None, 20)
+font = pygame.font.SysFont(None, 12)
 
 # Camera state
 camera_x, camera_y = 0.0, 0.0
 camera_zoom = 1.0
 
 # Grid constants
-BASE_SPACING = 10.0    # world spacing at absolute Level 0
+BASE_SPACING = 1.0    # world spacing at absolute Level 0
 TARGET_SPACING_PX = 100.0  # preferred on-screen spacing for "current level"
 MAX_REL_LEVELS = 2     # number of finer levels to draw
-R_MIN, R_MAX = 1.0, 3.0
+R_MIN, R_MAX = 1.0, 5.0
 
 class Particle:
     def __init__(self, world_x, world_y, size=5, color=(0, 100, 255)):
@@ -58,8 +58,7 @@ particles = [
 
 bodies = [
     Body(0, 0, 5e24),          # like Earth
-    Body(100, 50, 2e24),       # another mass
-    Body(0, 0, 1.989e30, 10)   # like Sun
+    Body(0, 0, 1.989e29, 10)   # like Sun
 ]
 
 def displace_point(x, y, bodies):
@@ -121,6 +120,11 @@ def draw_grid_level(spacing, radius_px, bodies=[]):
             sx, sy = world_to_screen(x_disp, y_disp)
             if -10 <= sx <= WIDTH + 10 and -10 <= sy <= HEIGHT + 10:
                 pygame.draw.circle(screen, (200,200,200), (int(round(sx)), int(round(sy))), int(radius_px))
+
+                # Draw the coordinates next to the point
+                #coord_text = f"({x:.1f}, {y:.1f})"
+                #text_surf = font.render(coord_text, True, (255, 255, 255))
+                #screen.blit(text_surf, (sx, sy + 10))  # offset slightly from point
             y += spacing
         x += spacing
 
