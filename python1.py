@@ -32,14 +32,22 @@ class Particle:
         # Only draw if within screen bounds (simple culling)
         if -screen_radius <= sx <= WIDTH + screen_radius and -screen_radius <= sy <= HEIGHT + screen_radius:
             pygame.draw.circle(screen, self.color, (int(sx), int(sy)), screen_radius)
-
 class Body:
-    def __init__(self, x, y, mass, radius=1.0):
+    def __init__(self, x, y, mass, radius=5.0):
         self.x = x        # world x
         self.y = y        # world y
-        self.mass = mass  # in kg
+        self.mass = mass  # kg
         self.radius = radius  # visual radius for rendering
         self.rs = 2 * 6.67430e-11 * mass / (3e8**2)  # Schwarzschild radius
+
+    def draw(self, camera_x, camera_y, camera_zoom):
+        sx = (self.x - camera_x) * camera_zoom + WIDTH * 0.5
+        sy = (self.y - camera_y) * camera_zoom + HEIGHT * 0.5
+        screen_radius = max(1, int(round(self.radius * camera_zoom)))
+        # Simple culling
+        if -screen_radius <= sx <= WIDTH + screen_radius and -screen_radius <= sy <= HEIGHT + screen_radius:
+            pygame.draw.circle(screen, (0, 200, 0), (int(sx), int(sy)), screen_radius)
+
 
 
 particles = [
@@ -51,6 +59,7 @@ particles = [
 bodies = [
     Body(0, 0, 5e24),          # like Earth
     Body(100, 50, 2e24),       # another mass
+    Body(0, 0, 1.989e30, 10)   # like Sun
 ]
 
 def displace_point(x, y, bodies):
@@ -194,6 +203,10 @@ while running:
     # Draw
     screen.fill((10, 10, 10))
     draw_grid()
+
+    # Draw bodies
+    for body in bodies:
+        body.draw(camera_x, camera_y, camera_zoom)
 
     for p in particles:
         p.draw(camera_x, camera_y, camera_zoom)
