@@ -33,12 +33,39 @@ class Particle:
         if -screen_radius <= sx <= WIDTH + screen_radius and -screen_radius <= sy <= HEIGHT + screen_radius:
             pygame.draw.circle(screen, self.color, (int(sx), int(sy)), screen_radius)
 
+class Body:
+    def __init__(self, x, y, mass, radius=1.0):
+        self.x = x        # world x
+        self.y = y        # world y
+        self.mass = mass  # in kg
+        self.radius = radius  # visual radius for rendering
+        self.rs = 2 * 6.67430e-11 * mass / (3e8**2)  # Schwarzschild radius
+
 
 particles = [
     Particle(0, 0, size=5),
     Particle(50, 50, size=8),
     Particle(-100, 30, size=4)
 ]
+
+bodies = [
+    Body(0, 0, 5e24),          # like Earth
+    Body(100, 50, 2e24),       # another mass
+]
+
+def displace_point(x, y, bodies):
+    x_new, y_new = x, y
+    for body in bodies:
+        dx = x_new - body.x
+        dy = y_new - body.y
+        r = math.hypot(dx, dy)
+        if r == 0:
+            continue  # avoid division by zero
+        # apply weak-field radial displacement
+        r_proper = r * (1 + body.rs / (2*r))
+        x_new = body.x + r_proper * dx / r
+        y_new = body.y + r_proper * dy / r
+    return x_new, y_new
 
 
 # Utilities
@@ -67,14 +94,12 @@ def relative_radius(rel_level):
     radius = R_MAX * (0.7 ** rel_level)  # 0.7 factor makes smoother decay
     return max(R_MIN, min(R_MAX, radius))
 
-def draw_grid_level(spacing, radius_px):
-    # Compute world bounds
+def draw_grid_level(spacing, radius_px, bodies=[]):
     left = camera_x - (WIDTH * 0.5) / camera_zoom
     right = camera_x + (WIDTH * 0.5) / camera_zoom
     top = camera_y - (HEIGHT * 0.5) / camera_zoom
     bottom = camera_y + (HEIGHT * 0.5) / camera_zoom
 
-    # First aligned grid dot
     start_x = math.floor(left / spacing) * spacing
     start_y = math.floor(top / spacing) * spacing
 
@@ -82,9 +107,11 @@ def draw_grid_level(spacing, radius_px):
     while x <= right:
         y = start_y
         while y <= bottom:
-            sx, sy = world_to_screen(x, y)
+            # Apply displacement due to all bodies
+            x_disp, y_disp = displace_point(x, y, bodies)
+            sx, sy = world_to_screen(x_disp, y_disp)
             if -10 <= sx <= WIDTH + 10 and -10 <= sy <= HEIGHT + 10:
-                pygame.draw.circle(screen, (200, 200, 200), (int(sx), int(sy)), int(radius_px))
+                pygame.draw.circle(screen, (200,200,200), (int(round(sx)), int(round(sy))), int(radius_px))
             y += spacing
         x += spacing
 
@@ -94,7 +121,7 @@ def draw_grid():
         L = L_current + rel
         spacing = level_to_spacing(L)   # works for negative too
         radius = relative_radius(rel)
-        draw_grid_level(spacing, radius)
+        draw_grid_level(spacing, radius, bodies=bodies)
 
 def debug_overlay():
     L_current = compute_current_level(camera_zoom)
