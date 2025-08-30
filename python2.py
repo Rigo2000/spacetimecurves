@@ -8,195 +8,210 @@ clock = pygame.time.Clock()
 font = pygame.font.SysFont(None, 14)
 
 camera_x, camera_y = 0.0, 0.0
-
 camera_zoom = 1.0
 
 WORLD_SIZE = 2000
-MAP_RES = 2
+MAP_RES = 4  # increased for performance
 BASE_SPACING = 50
 TARGET_SPACING_PX = 50
-MAX_REL_LEVELS = 2
+MAX_REL_LEVELS = 3
 R_MIN, R_MAX = 1, 4
 
-#CLASSES
+# METRIC GRID
+N = int(WORLD_SIZE / MAP_RES)
+x_axis = np.linspace(-WORLD_SIZE / 2, WORLD_SIZE / 2, N)
+y_axis = np.linspace(-WORLD_SIZE / 2, WORLD_SIZE / 2, N)
+spacetime_map = np.zeros((N, N, 6))
+
+
+# ----------------- STAR CLASS -----------------
 class Star:
-	def __init__(self, x_position, y_position, mass, spin=0.0, radius=10, color=(255, 200, 50)):
-		self.x = x_position
-		self.y = y_position
-		self.mass = mass
-		self.spin = spin   # rotation parameter (Kerr-like)
-		self.radius = radius
-		self.color = color
+    def __init__(self, x_position, y_position, mass, spin=0.0, radius=10, color=(255, 200, 50), epsilon=0.01):
+        self.x = x_position
+        self.y = y_position
+        self.mass = mass
+        self.spin = spin
+        self.radius = radius
+        self.color = color
+        self.epsilon = epsilon
+        self.max_effect_radius = self.radius / self.epsilon
+        self.needs_update = True  # flag to update spacetime map
 
-	def add_metric_to_grid(self, spacetime_map):
-		"""
-		Add this star’s contribution to the spacetime metric grid.
-		Stores 6 values per grid point:
-		[g_tt, g_xx, g_yy, g_xy, frame_drag_x, frame_drag_y]
-		"""
-		for ix, x in enumerate(x_axis):
-			for iy, y in enumerate(y_axis):
-				dx = x - self.x
-				dy = y - self.y
-				r2 = dx*dx + dy*dy
-				r = math.sqrt(r2) + 1e-6  # avoid zero
+    def add_metric_to_grid(self, spacetime_map):
+        if not self.needs_update:
+            return  # skip if already applied
 
-				# Simplified Schwarzschild potential
-				g_tt = -self.mass / r  
+        # Compute bounding box indices
+        ix_min = max(0, int((self.x - self.max_effect_radius + WORLD_SIZE / 2) / MAP_RES))
+        ix_max = min(N - 1, int((self.x + self.max_effect_radius + WORLD_SIZE / 2) / MAP_RES))
+        iy_min = max(0, int((self.y - self.max_effect_radius + WORLD_SIZE / 2) / MAP_RES))
+        iy_max = min(N - 1, int((self.y + self.max_effect_radius + WORLD_SIZE / 2) / MAP_RES))
 
-				# Spatial stretching (scale space around the star)
-				g_xx = 1 + self.mass / (r2 + 1)
-				g_yy = 1 + self.mass / (r2 + 1)
+        # Vectorized calculation
+        xs = x_axis[ix_min:ix_max + 1][:, None]
+        ys = y_axis[iy_min:iy_max + 1][None, :]
+        dx = xs - self.x
+        dy = ys - self.y
+        r2 = dx ** 2 + dy ** 2
+        r = np.sqrt(r2) + 1e-6
 
-				# Cross term (anisotropy) – very simplified
-				g_xy = (dx * dy) / (r2 + 1) * self.mass * 0.01
+        mask = r <= self.max_effect_radius
+        if not np.any(mask):
+            return
 
-				# Frame-dragging from spin (Kerr-like effect)
-				frame_strength = self.spin * self.mass / (r2 + 1)
-				frame_drag_x = -dy / r * frame_strength
-				frame_drag_y = dx / r * frame_strength
+        g_tt = -self.mass / r
+        g_xx = 1 + self.mass / (r2 + 1)
+        g_yy = 1 + self.mass / (r2 + 1)
+        g_xy = (dx * dy) / (r2 + 1) * self.mass * 0.01
+        frame_strength = self.spin * self.mass / (r2 + 1)
+        frame_drag_x = -dy / r * frame_strength
+        frame_drag_y = dx / r * frame_strength
 
-				# Add contributions into the map
-				spacetime_map[ix, iy, 0] += g_tt
-				spacetime_map[ix, iy, 1] += g_xx
-				spacetime_map[ix, iy, 2] += g_yy
-				spacetime_map[ix, iy, 3] += g_xy
-				spacetime_map[ix, iy, 4] += frame_drag_x
-				spacetime_map[ix, iy, 5] += frame_drag_y
+        # Apply mask
+        g_tt *= mask
+        g_xx *= mask
+        g_yy *= mask
+        g_xy *= mask
+        frame_drag_x *= mask
+        frame_drag_y *= mask
 
-	def draw(self, screen, camera_x, camera_y, camera_zoom):
-		"""Draw the star at its world position."""
-		screen_x = (self.x - camera_x) * camera_zoom + WIDTH / 2
-		screen_y = (self.y - camera_y) * camera_zoom + HEIGHT / 2
-		pygame.draw.circle(screen, self.color, (int(screen_x), int(screen_y)), int(self.radius * camera_zoom))
+        spacetime_map[ix_min:ix_max + 1, iy_min:iy_max + 1, 0] += g_tt
+        spacetime_map[ix_min:ix_max + 1, iy_min:iy_max + 1, 1] += g_xx
+        spacetime_map[ix_min:ix_max + 1, iy_min:iy_max + 1, 2] += g_yy
+        spacetime_map[ix_min:ix_max + 1, iy_min:iy_max + 1, 3] += g_xy
+        spacetime_map[ix_min:ix_max + 1, iy_min:iy_max + 1, 4] += frame_drag_x
+        spacetime_map[ix_min:ix_max + 1, iy_min:iy_max + 1, 5] += frame_drag_y
+
+        self.needs_update = False  # mark as updated
+
+    def draw(self, screen, camera_x, camera_y, camera_zoom):
+        screen_x = (self.x - camera_x) * camera_zoom + WIDTH / 2
+        screen_y = (self.y - camera_y) * camera_zoom + HEIGHT / 2
+        pygame.draw.circle(screen, self.color, (int(screen_x), int(screen_y)), int(self.radius * camera_zoom))
 
 
-#METRIC GRID
-N = int(WORLD_SIZE/MAP_RES)
-x_axis = np.linspace(-WORLD_SIZE/2, WORLD_SIZE/2, N)
-y_axis = np.linspace(-WORLD_SIZE/2, WORLD_SIZE/2, N)
-spacetime_map = np.zeros((N,N, 6))
-
-
-#DRAW GRID
+# ----------------- GRID DRAWING -----------------
 def compute_current_level(zoom):
-	val = (BASE_SPACING * zoom) / TARGET_SPACING_PX
-	return round(math.log2(val)) if val > 0 else 0
+    val = (BASE_SPACING * zoom) / TARGET_SPACING_PX
+    return round(math.log2(val)) if val > 0 else 0
 
 
 def level_to_spacing(level):
-	return BASE_SPACING / (2 ** level)
+    return BASE_SPACING / (2 ** level)
+
 
 def relative_radius(rel_level):
-	radius = R_MAX * (0.7 ** rel_level)
-	return max(R_MIN, radius)
+    radius = R_MAX * (0.7 ** rel_level)
+    return max(R_MIN, radius)
+
 
 def draw_grid(camera_x, camera_y, camera_zoom):
-	L_current = compute_current_level(camera_zoom)
-	for rel in range(MAX_REL_LEVELS):
-		L = L_current + rel
-		spacing = level_to_spacing(L)
-		radius = relative_radius(rel)
+    L_current = compute_current_level(camera_zoom)
+    for rel in range(MAX_REL_LEVELS):
+        L = L_current + rel
+        spacing = level_to_spacing(L)
+        radius = relative_radius(rel)
 
-		left = camera_x - WIDTH / 2 / camera_zoom
-		right = camera_x + WIDTH / 2 / camera_zoom
-		top = camera_y - HEIGHT / 2 / camera_zoom
-		bottom = camera_y + HEIGHT / 2 / camera_zoom
+        left = camera_x - WIDTH / 2 / camera_zoom
+        right = camera_x + WIDTH / 2 / camera_zoom
+        top = camera_y - HEIGHT / 2 / camera_zoom
+        bottom = camera_y + HEIGHT / 2 / camera_zoom
 
-		x = left - left % spacing
-		while x <= right:
-			y = top - top % spacing
-			while y <= bottom:
-				# ---- Map world coord (x,y) to spacetime_map indices ----
-				ix = int((x + WORLD_SIZE/2) / MAP_RES)
-				iy = int((y + WORLD_SIZE/2) / MAP_RES)
+        x = left - left % spacing
+        while x <= right:
+            y = top - top % spacing
+            while y <= bottom:
+                ix = int((x + WORLD_SIZE / 2) / MAP_RES)
+                iy = int((y + WORLD_SIZE / 2) / MAP_RES)
 
-				# Clamp to avoid out-of-bounds errors
-				ix = min(max(ix, 1), N - 2)  # 1..N-2 so we can compute finite differences
-				iy = min(max(iy, 1), N - 2)
-				
-				g_tt, g_xx, g_yy, g_xy, frame_drag_x, frame_drag_y = spacetime_map[ix, iy]
+                ix = min(max(ix, 1), N - 2)
+                iy = min(max(iy, 1), N - 2)
 
-				dx = x
-				dy = y
+                g_tt, g_xx, g_yy, g_xy, frame_drag_x, frame_drag_y = spacetime_map[ix, iy]
 
-				r = math.sqrt(dx*dx + dy*dy) + 1e-6
+                dx = x
+                dy = y
+                r = math.sqrt(dx * dx + dy * dy) + 1e-6
 
-				displacement_x = -g_tt * (dx/r)
-				displacement_y = -g_tt * (dy/r)
+                displacement_x = -g_tt * (dx / r) * g_xx + g_xy * dy + frame_drag_x
+                displacement_y = -g_tt * (dy / r) * g_yy + g_xy * dx + frame_drag_y
 
-				displacement_x *= g_xx
-				displacement_y *= g_yy
+                warped_x = x + displacement_x
+                warped_y = y + displacement_y
 
-				displacement_x += g_xy * dy
-				displacement_y += g_xy * dx
+                screen_x = (warped_x - camera_x) * camera_zoom + WIDTH / 2
+                screen_y = (warped_y - camera_y) * camera_zoom + HEIGHT / 2
 
-				displacement_x += frame_drag_x
-				displacement_y += frame_drag_y
+                pygame.draw.circle(screen, (200, 200, 200), (int(screen_x), int(screen_y)), int(radius))
 
-				warped_x = x + displacement_x
-				warped_y = y + displacement_y
-
-				screen_x = (warped_x - camera_x) * camera_zoom + WIDTH / 2
-				screen_y = (warped_y - camera_y) * camera_zoom + HEIGHT / 2
-
-				pygame.draw.circle(screen, (200,200,200), (int(screen_x), int(screen_y)), int(radius))
-
-				y += spacing
-			x += spacing
+                y += spacing
+            x += spacing
 
 
-
-#DEBUG FUNCTIONS
+# ----------------- DEBUG -----------------
 def write_camera_pos_zoom_on_screen():
-	camera_pos_text = f"Camera Position: ({camera_x:.2f}, {camera_y:.2f})"
-	camera_zoom_text = f"Camera Zoom: {camera_zoom:.2f}"
-	text_surface = font.render(camera_pos_text, True, (255, 255, 255))
-	screen.blit(text_surface, (10, 10))
-	text_surface = font.render(camera_zoom_text, True, (255, 255, 255))
-	screen.blit(text_surface, (10, 30))
+    camera_pos_text = f"Camera Position: ({camera_x:.2f}, {camera_y:.2f})"
+    camera_zoom_text = f"Camera Zoom: {camera_zoom:.2f}"
+    text_surface = font.render(camera_pos_text, True, (255, 255, 255))
+    screen.blit(text_surface, (10, 10))
+    text_surface = font.render(camera_zoom_text, True, (255, 255, 255))
+    screen.blit(text_surface, (10, 30))
 
-#MAIN LOOP
+
+# ----------------- MAIN LOOP -----------------
 panning = False
 pan_last_mouse = (0, 0)
 
+# Create a star instance
+star1 = Star(x_position=100, y_position=-50, mass=10.0, spin=2.0)
+
 running = True
 while running:
-	dt = clock.tick(60)/1000.0
+    dt = clock.tick(60) / 1000.0
 
-	for event in pygame.event.get():
-		if event.type == pygame.QUIT:
-			running = False
-		elif event.type == pygame.MOUSEWHEEL:
-			mx, my = pygame.mouse.get_pos()
-			before_wx = (mx - WIDTH/2) / camera_zoom + camera_x
-			before_wy = (my - HEIGHT/2) / camera_zoom + camera_y
-			factor = 1.1**event.y
-			camera_zoom *= factor
-			camera_zoom = max(0.001, min(1000.0, camera_zoom))
-			camera_x = before_wx - (mx - WIDTH/2)/camera_zoom
-			camera_y = before_wy - (my - HEIGHT/2)/camera_zoom
-		elif event.type == pygame.MOUSEMOTION:
-			if panning:
-				mx, my = pygame.mouse.get_pos()
-				dx, dy = mx - pan_last_mouse[0], my - pan_last_mouse[1]
-				camera_x -= dx / camera_zoom
-				camera_y -= dy / camera_zoom
-				pan_last_mouse = (mx, my)
-	
-	keys = pygame.key.get_pressed()
-	move_speed = 400 / camera_zoom * dt
-	if keys[pygame.K_LEFT]: camera_x -= move_speed
-	if keys[pygame.K_RIGHT]: camera_x += move_speed
-	if keys[pygame.K_UP]: camera_y -= move_speed
-	if keys[pygame.K_DOWN]: camera_y += move_speed
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+        elif event.type == pygame.MOUSEWHEEL:
+            mx, my = pygame.mouse.get_pos()
+            before_wx = (mx - WIDTH / 2) / camera_zoom + camera_x
+            before_wy = (my - HEIGHT / 2) / camera_zoom + camera_y
+            factor = 1.1 ** event.y
+            camera_zoom *= factor
+            camera_zoom = max(0.001, min(1000.0, camera_zoom))
+            camera_x = before_wx - (mx - WIDTH / 2) / camera_zoom
+            camera_y = before_wy - (my - HEIGHT / 2) / camera_zoom
+        elif event.type == pygame.MOUSEMOTION:
+            if panning:
+                mx, my = pygame.mouse.get_pos()
+                dx, dy = mx - pan_last_mouse[0], my - pan_last_mouse[1]
+                camera_x -= dx / camera_zoom
+                camera_y -= dy / camera_zoom
+                pan_last_mouse = (mx, my)
 
-	screen.fill((10,10,10))
-	draw_grid(camera_x, camera_y, camera_zoom)
+    keys = pygame.key.get_pressed()
+    move_speed = 400 / camera_zoom * dt
+    if keys[pygame.K_LEFT]:
+        camera_x -= move_speed
+    if keys[pygame.K_RIGHT]:
+        camera_x += move_speed
+    if keys[pygame.K_UP]:
+        camera_y -= move_speed
+    if keys[pygame.K_DOWN]:
+        camera_y += move_speed
 
-	write_camera_pos_zoom_on_screen()
+    # Clear screen
+    screen.fill((10, 10, 10))
 
-	pygame.display.flip()
+    # Apply star metric once
+    star1.add_metric_to_grid(spacetime_map)
+    star1.draw(screen, camera_x, camera_y, camera_zoom)
+
+    # Draw grid warped by spacetime
+    draw_grid(camera_x, camera_y, camera_zoom)
+
+    write_camera_pos_zoom_on_screen()
+    pygame.display.flip()
 
 pygame.quit()
 sys.exit()
