@@ -18,6 +18,65 @@ TARGET_SPACING_PX = 50
 MAX_REL_LEVELS = 2
 R_MIN, R_MAX = 1, 4
 
+#CLASSES
+class Star:
+	def __init__(self, x_position, y_position, mass, spin=0.0, radius=10, color=(255, 200, 50)):
+		self.x = x_position
+		self.y = y_position
+		self.mass = mass
+		self.spin = spin   # rotation parameter (Kerr-like)
+		self.radius = radius
+		self.color = color
+
+	def add_metric_to_grid(self, spacetime_map):
+		"""
+		Add this star’s contribution to the spacetime metric grid.
+		Stores 6 values per grid point:
+		[g_tt, g_xx, g_yy, g_xy, frame_drag_x, frame_drag_y]
+		"""
+		for ix, x in enumerate(x_axis):
+			for iy, y in enumerate(y_axis):
+				dx = x - self.x
+				dy = y - self.y
+				r2 = dx*dx + dy*dy
+				r = math.sqrt(r2) + 1e-6  # avoid zero
+
+				# Simplified Schwarzschild potential
+				g_tt = -self.mass / r  
+
+				# Spatial stretching (scale space around the star)
+				g_xx = 1 + self.mass / (r2 + 1)
+				g_yy = 1 + self.mass / (r2 + 1)
+
+				# Cross term (anisotropy) – very simplified
+				g_xy = (dx * dy) / (r2 + 1) * self.mass * 0.01
+
+				# Frame-dragging from spin (Kerr-like effect)
+				frame_strength = self.spin * self.mass / (r2 + 1)
+				frame_drag_x = -dy / r * frame_strength
+				frame_drag_y = dx / r * frame_strength
+
+				# Add contributions into the map
+				spacetime_map[ix, iy, 0] += g_tt
+				spacetime_map[ix, iy, 1] += g_xx
+				spacetime_map[ix, iy, 2] += g_yy
+				spacetime_map[ix, iy, 3] += g_xy
+				spacetime_map[ix, iy, 4] += frame_drag_x
+				spacetime_map[ix, iy, 5] += frame_drag_y
+
+	def draw(self, screen, camera_x, camera_y, camera_zoom):
+		"""Draw the star at its world position."""
+		screen_x = (self.x - camera_x) * camera_zoom + WIDTH / 2
+		screen_y = (self.y - camera_y) * camera_zoom + HEIGHT / 2
+		pygame.draw.circle(screen, self.color, (int(screen_x), int(screen_y)), int(self.radius * camera_zoom))
+
+
+#METRIC GRID
+N = int(WORLD_SIZE/MAP_RES)
+x_axis = np.linspace(-WORLD_SIZE/2, WORLD_SIZE/2, N)
+y_axis = np.linspace(-WORLD_SIZE/2, WORLD_SIZE/2, N)
+spacetime_map = np.zeros((N,N, 6))
+
 
 #DRAW GRID
 def compute_current_level(zoom):
@@ -48,11 +107,44 @@ def draw_grid(camera_x, camera_y, camera_zoom):
 		while x <= right:
 			y = top - top % spacing
 			while y <= bottom:
-				screen_x = (x - camera_x) * camera_zoom + WIDTH / 2
-				screen_y = (y - camera_y) * camera_zoom + HEIGHT / 2
+				# ---- Map world coord (x,y) to spacetime_map indices ----
+				ix = int((x + WORLD_SIZE/2) / MAP_RES)
+				iy = int((y + WORLD_SIZE/2) / MAP_RES)
+
+				# Clamp to avoid out-of-bounds errors
+				ix = min(max(ix, 1), N - 2)  # 1..N-2 so we can compute finite differences
+				iy = min(max(iy, 1), N - 2)
+				
+				g_tt, g_xx, g_yy, g_xy, frame_drag_x, frame_drag_y = spacetime_map[ix, iy]
+
+				dx = x
+				dy = y
+
+				r = math.sqrt(dx*dx + dy*dy) + 1e-6
+
+				displacement_x = -g_tt * (dx/r)
+				displacement_y = -g_tt * (dy/r)
+
+				displacement_x *= g_xx
+				displacement_y *= g_yy
+
+				displacement_x += g_xy * dy
+				displacement_y += g_xy * dx
+
+				displacement_x += frame_drag_x
+				displacement_y += frame_drag_y
+
+				warped_x = x + displacement_x
+				warped_y = y + displacement_y
+
+				screen_x = (warped_x - camera_x) * camera_zoom + WIDTH / 2
+				screen_y = (warped_y - camera_y) * camera_zoom + HEIGHT / 2
+
 				pygame.draw.circle(screen, (200,200,200), (int(screen_x), int(screen_y)), int(radius))
+
 				y += spacing
 			x += spacing
+
 
 
 #DEBUG FUNCTIONS

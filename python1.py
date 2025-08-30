@@ -61,6 +61,8 @@ class Particle:
 
 # Precompute displacement map
 def generate_displacement_map(body):
+    # Why N like this
+    #
     N = int(WORLD_SIZE/MAP_RES)
     displacement_map = np.zeros((N,N))
     map_x = np.linspace(-WORLD_SIZE/2, WORLD_SIZE/2, N)
